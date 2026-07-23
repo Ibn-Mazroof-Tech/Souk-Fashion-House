@@ -1,0 +1,418 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// SOUK FASHION HOUSE — Prisma Schema
+// Database: PostgreSQL (Neon)
+// ─────────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  // Use pooler URL for queries, direct URL for migrations
+  url       = env("DATABASE_URL")
+  directUrl = env("DATABASE_URL_UNPOOLED")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum Role {
+  CUSTOMER
+  ADMIN
+}
+
+enum OrderStatus {
+  ORDERED
+  CONFIRMED
+  SHIPPED
+  DELIVERED
+  CANCELLED
+}
+
+enum PaymentMethod {
+  RAZORPAY
+  COD
+  WHATSAPP
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// USER & AUTH (NextAuth compatible)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  // null for OAuth users — only set for Credentials login
+  password      String?
+  phone         String?
+  role          Role      @default(CUSTOMER)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // NextAuth relations
+  accounts  Account[]
+  sessions  Session[]
+
+  // App relations
+  orders    Order[]
+  cart      CartItem[]
+  wishlist  Wishlist[]
+  reviews   Review[]
+  addresses Address[]
+
+  @@index([email])
+  @@map("users")
+}
+
+// NextAuth: OAuth account linking
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+// NextAuth: Session management
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PRODUCT CATALOG
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Category {
+  id       String    @id @default(cuid())
+  name     String    @unique  // Display name: "Pherans"
+  slug     String    @unique  // URL slug: "pherans"
+  products Product[]
+
+  @@map("categories")
+}
+
+model Product {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  description String?  @db.Text
+  // Prices stored in PAISE to avoid float precision bugs
+  // ₹2,999 → 299900
+  price       Int
+  mrp         Int
+  // Track available stock per product — used when the product has no
+  // size+color variants. If `variants` exist, per-variant stock is used
+  // instead and this field is left as a display fallback.
+  stock       Int      @default(0)
+  featured    Boolean  @default(false)
+  active      Boolean  @default(true)
+  // Cloudinary URLs array
+  images      String[]
+  // e.g. ["S","M","L","XL"] or ["Free"] — only used when no variants exist
+  sizes       String[]
+  categoryId  String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  category   Category         @relation(fields: [categoryId], references: [id])
+  cartItems  CartItem[]
+  orderItems OrderItem[]
+  wishlist   Wishlist[]
+  reviews    Review[]
+  variants   ProductVariant[]
+  colorImages ProductColorImage[]
+
+  @@index([slug])
+  @@index([categoryId])
+  @@index([featured])
+  @@index([price])
+  @@index([active])
+  @@map("products")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PRODUCT VARIANT — one row per size+color combination, each with its own
+// stock count. A product that hasn't been set up with variants simply has
+// none, and falls back to Product.sizes + Product.stock.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model ProductVariant {
+  id        String   @id @default(cuid())
+  productId String
+  size      String
+  color     String
+  // Hex code for the color swatch, e.g. "#111111" — optional, for display only
+  colorHex  String?
+  stock     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  product    Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
+  orderItems OrderItem[]
+
+  @@unique([productId, size, color])
+  @@index([productId])
+  @@map("product_variants")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PRODUCT COLOR IMAGE — image set for one color, shared across all sizes of
+// that color. When a shopper picks a color, the gallery swaps to these; if a
+// color has none uploaded, the product's general `images` are used instead.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model ProductColorImage {
+  id        String   @id @default(cuid())
+  productId String
+  color     String
+  images    String[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, color])
+  @@map("product_color_images")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CART (DB-persisted for authenticated users)
+// Guest cart lives in Zustand/localStorage, merged on login
+// ─────────────────────────────────────────────────────────────────────────────
+
+model CartItem {
+  id        String  @id @default(cuid())
+  userId    String
+  productId String
+  size      String
+  qty       Int     @default(1)
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+
+  // One record per user+product+size combination
+  @@unique([userId, productId, size])
+  @@index([userId])
+  @@map("cart_items")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ORDERS
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Order {
+  id            String        @id @default(cuid())
+  // Human-readable ID preserved from original: "SFH-10001"
+  orderId       String        @unique
+  // null for guest orders
+  userId        String?
+  // Guest order fields (used when userId is null)
+  guestName     String?
+  guestPhone    String?
+  guestEmail    String?
+  status        OrderStatus   @default(ORDERED)
+  paymentMethod PaymentMethod
+  paymentStatus PaymentStatus @default(PENDING)
+  // Total in PAISE
+  total         Int
+  // Applied coupon code (if any)
+  couponCode    String?
+  couponDiscount Int?
+  notes         String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  user      User?       @relation(fields: [userId], references: [id])
+  items     OrderItem[]
+  payment   Payment?
+  address   Address?    @relation(fields: [addressId], references: [id])
+  addressId String?
+
+  @@index([userId])
+  @@index([orderId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([paymentStatus])
+  @@map("orders")
+}
+
+// Order line items — snapshot product data at purchase time
+// Price/name stored here so future edits don't change past orders
+model OrderItem {
+  id        String  @id @default(cuid())
+  orderId   String
+  productId String
+  // Set only when the product uses size+color variants
+  variantId String?
+  // Snapshot fields — frozen at order creation time
+  name      String
+  image     String
+  size      String
+  // Snapshot of the color chosen, if the product has variants
+  color     String?
+  qty       Int
+  // Price per unit in PAISE at time of order
+  price     Int
+
+  order   Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product         @relation(fields: [productId], references: [id])
+  variant ProductVariant? @relation(fields: [variantId], references: [id])
+
+  @@index([orderId])
+  @@map("order_items")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PAYMENT
+// Stores Razorpay triple (orderId + paymentId + signature) for HMAC verification
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Payment {
+  id                String        @id @default(cuid())
+  orderId           String        @unique
+  // Razorpay identifiers (null for COD)
+  razorpayOrderId   String?
+  razorpayPaymentId String?
+  razorpaySignature String?
+  // Amount in PAISE
+  amount            Int
+  currency          String        @default("INR")
+  status            PaymentStatus @default(PENDING)
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id])
+
+  @@index([razorpayOrderId])
+  @@index([razorpayPaymentId])
+  @@map("payments")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADDRESS
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Address {
+  id        String  @id @default(cuid())
+  userId    String
+  name      String
+  phone     String
+  line1     String
+  line2     String?
+  city      String
+  state     String
+  pincode   String
+  isDefault Boolean @default(false)
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orders Order[]
+
+  @@index([userId])
+  @@map("addresses")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WISHLIST
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Wishlist {
+  id        String   @id @default(cuid())
+  userId    String
+  productId String
+  addedAt   DateTime @default(now())
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+
+  @@unique([userId, productId])
+  @@index([userId])
+  @@map("wishlists")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REVIEWS
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Review {
+  id        String   @id @default(cuid())
+  userId    String
+  productId String
+  // 1–5 stars
+  rating    Int
+  title     String?
+  body      String?  @db.Text
+  verified  Boolean  @default(false) // true if user actually purchased
+  createdAt DateTime @default(now())
+
+  user    User    @relation(fields: [userId], references: [id])
+  product Product @relation(fields: [productId], references: [id])
+
+  // One review per user per product
+  @@unique([userId, productId])
+  @@index([productId])
+  @@index([rating])
+  @@map("reviews")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COUPONS (bonus feature)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Coupon {
+  id        String    @id @default(cuid())
+  code      String    @unique
+  // "percent" (e.g. 20% off) or "flat" (e.g. ₹200 off)
+  type      String
+  // For percent: 20 = 20%, For flat: 20000 = ₹200 in paise
+  value     Int
+  // Minimum order total in paise to apply coupon
+  minOrder  Int       @default(0)
+  maxUses   Int?
+  usedCount Int       @default(0)
+  expiresAt DateTime?
+  active    Boolean   @default(true)
+  createdAt DateTime  @default(now())
+
+  @@index([code])
+  @@map("coupons")
+}
